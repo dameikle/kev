@@ -30,7 +30,7 @@ The architecture follows the reconstruction of TypeSafe's Jev in [Jev's Architec
 
 ## Installation
 
-Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20+ for the playground. Serving is tested on Apple Silicon (MPS); training and evaluation on CUDA (H100 via Modal) and MPS.
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and Node 20+ for the playground. Serving is tested on Apple Silicon (MPS) and CUDA; training and evaluation on CUDA (local RTX 3090, H100 via Modal) and MPS. The Linux torch wheel in `uv.lock` is the CUDA build, so `uv sync` needs no extra flags.
 
 ```bash
 git clone https://github.com/jaredpalmer/kev.git && cd kev
@@ -231,6 +231,12 @@ Training data are public datasets converted to TypeSafe-shaped requests plus pro
 # sanity run, ~1 minute
 uv run python -m kev.train --n_per_source 40 --accum 4 --out runs/smoke
 
+# Kev-0.5B prototype, ~1h45m on an M5 or ~29 min fp32 on an RTX 3090
+uv run python -m kev.train --base Qwen/Qwen2.5-0.5B --n_per_source 1500 --epochs 2 --out runs/kev
+
+# the same prototype recipe, ~24 min on an RTX 3090 (equal accuracy, 12 GiB peak)
+uv run python -m kev.train --base Qwen/Qwen2.5-0.5B --n_per_source 1500 --epochs 2 --batch 4 --accum 2 --dtype bf16 --out runs/kev-bf16
+
 # Kev-0.6B on a Mac (~2 h on an M5) or a few minutes on one H100
 uv run python -m kev.train --suite evals/v7/decision-v7 --base Qwen/Qwen3-0.6B-Base --epochs 2 --lr 1e-4 --p_none_pair 0.25 --out runs/kev-0.6b
 
@@ -255,7 +261,7 @@ uv run python -m kev.train --suite evals/v7/decision-v7 --base Qwen/Qwen3-4B-Bas
 
 The released checkpoints used cross-entropy without either extra loss (`--perm_kl`, `--ord_w` are research knobs; neither beat the plain recipe). The optional ordinal loss compares cumulative probabilities, a proper scoring rule, rather than absolute error of the expected level.
 
-On a Mac, run one training job at a time; two jobs on the same Apple GPU slow each other by about 10×. The MBP path is kept working, but anything longer than a smoke run goes to Modal.
+On a Mac, run one training job at a time; two jobs on the same Apple GPU slow each other by about 10×. The MBP path is kept working, but anything longer than a smoke run goes to Modal. Devices auto-select in `cuda` → `mps` → `cpu` order. CUDA evaluation disables TF32 and the fast SDPA kernels for fp32-exact probabilities; serving keeps the faster CUDA defaults unless `KEV_EXACT=1` is set.
 
 ### Modal
 
@@ -273,7 +279,7 @@ uv run modal run modal_app.py::pull --name my-study       # results -> runs/my-s
 uv run modal run modal_app.py::locked_test --trial my-study/00-trial-0 --name my-candidate   # one read, ever
 ```
 
-A plan is a JSON list of 1–8 trials over an allowlisted set of training parameters (`kev/experiment.py`). Each trial records the local git commit, the suite hash, and the hashes of the shipped `kev/*.py`; the container refuses to run if they differ from what the launcher hashed. Training uses TF32 and optional bf16; evaluation is fp32-exact (TF32 alone moves probabilities by ~1e-3, enough to trip the isolation gate). Measured: 0.019 s/record for Qwen2.5-0.5B at batch 8 on an H100 vs 0.34 s/record on an M5, ~$0.15–0.30 per 0.5B trial.
+A plan is a JSON list of 1–8 trials over an allowlisted set of training parameters (`kev/experiment.py`). Each trial records the local git commit, the suite hash, and the hashes of the shipped `kev/*.py`; the container refuses to run if they differ from what the launcher hashed. Training uses TF32 and optional bf16; evaluation is fp32-exact (TF32 alone moves probabilities by ~1e-3, enough to trip the isolation gate). Measured: 0.019 s/record for Qwen2.5-0.5B at batch 8 on an H100 vs 0.34 s/record on an M5 (0.105 fp32 batch 1 / 0.081 bf16 batch 4 on an RTX 3090), ~$0.15–0.30 per 0.5B trial.
 
 ## Evaluation
 

@@ -6,8 +6,9 @@ on converted public datasets (Banking77, BoolQ, AG News, MNLI, SST-5, Yelp). No 
 See README.md (deep dive) and docs/model-cards/ (one card per checkpoint: recipe + metrics; kev-0.5b.md is the superseded prototype). README follows the Vercel Labs house style (tagline, for-the-badge badges, Highlights, Title Case sections, API tables, Authors + License); MODEL_CARD.md is formal.
 
 ## Commands
-- Env: `uv sync` (torch MPS, transformers, peft, datasets)
-- Train: `uv run python -m kev.train --n_per_source 1500 --epochs 2 --out runs/kev` (~1h45m on M5 32GB)
+- Env: `uv sync` (torch: CUDA wheels on Linux, MPS on macOS — no extra flags; transformers, peft, datasets)
+- Train: `uv run python -m kev.train --n_per_source 1500 --epochs 2 --out runs/kev` (~1h45m on M5 32GB; ~29 min fp32 on an RTX 3090)
+  - CUDA fast path: add `--batch 4 --accum 2 --dtype bf16` (~24 min on a 3090, 12 GiB peak, accuracy equal to fp32 within seed noise; validated on Ampere). Device auto-picks cuda > mps > cpu.
   - `--holdout mnli,sst5` excludes sources (out-of-source eval); `--perm_kl/--perm_frac` permutation-consistency KL;
     `--ord_w` ordinal term for Score. Only one training process at a time: two on MPS slow each other ~10x.
 - Eval:  `uv run python -m kev.evaluate --run runs/kev --n_per_source 150 --baseline --baseline_instruct Qwen/Qwen2.5-0.5B-Instruct`
@@ -63,6 +64,12 @@ See README.md (deep dive) and docs/model-cards/ (one card per checkpoint: recipe
 - `tests/test_api.py` conformance against the docs' example requests + official SDK
 
 ## Notes
+- Device auto-selects cuda > mps > cpu. Attention is eager on MPS/CPU (known-good with the float 4D mask) and SDPA on CUDA
+  (`DecisionModel`). Training enables TF32; `evaluate`/`benchmark.LocalPredictor` turn TF32 + fast SDPA off on CUDA for
+  fp32-exact probabilities. Serving keeps the faster CUDA defaults; `KEV_EXACT=1` opts into the exact path. `--dtype bf16`
+  is CUDA-only (autocast, fp32 master weights).
+- `train`/`evaluate` pre-filter records whose state/branch exceeds the 384/1024 token limits (dataset revisions aren't pinned,
+  so sources drift); counts land in `training_metrics.json` rejected_records and `eval.json` dropped_overlong_records.
 - Delimiters reuse existing Qwen special tokens (`<|fim_prefix|>` etc.) to avoid resizing embeddings;
   peft `trainable_token_indices` leaked memory on MPS.
 - `output_hidden_states=True` on MPS blows memory; use the bare `.model` backbone's `last_hidden_state`.

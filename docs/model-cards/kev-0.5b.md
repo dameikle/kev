@@ -118,6 +118,8 @@ No LLM-generated data. No human annotation beyond the original datasets.
 | Seed | 0 |
 | Final training loss | 0.27 |
 
+The recipe is device-agnostic (`--device` auto-selects CUDA, then MPS, then CPU). On a single RTX 3090, with the current data pipeline: 29 min in fp32 (5.9 GiB peak), or 24 min with `--batch 4 --accum 2 --dtype bf16` (11.8 GiB peak); both reach ~0.81 accuracy over the six sources (Section "Evaluation"), within seed noise of each other. CUDA evaluation runs fp32-exact with TF32 and the fast SDPA kernels disabled. Serving keeps the faster CUDA defaults unless `KEV_EXACT=1` is set.
+
 This checkpoint predates two loss terms that are now defaults in `kev/train.py`: the ordinal term for Score (`--ord_w`) and the permutation-consistency KL for Choice (`--perm_kl`). To reproduce this checkpoint exactly:
 
 ```bash

@@ -184,6 +184,10 @@ def main():
     label = run                       # what /v1/models reports: the Hub id or run path as given, not the resolved cache path
     run = resolve_run(run)
     dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    if dev == "cuda" and os.environ.get("KEV_EXACT") == "1":
+        # Opt into evaluation-equivalent probabilities at the cost of CUDA matmul/attention throughput.
+        torch.backends.cuda.matmul.allow_tf32 = False; torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.enable_flash_sdp(False); torch.backends.cuda.enable_mem_efficient_sdp(False)
     meta = torch.load(f"{run}/head.pt", map_location="cpu")
     if dev == "mps" and not os.environ.get("KEV_ATTN"): os.environ["KEV_ATTN"] = "sdpa"   # serving default on Apple GPUs (parity measured)
     tok, model = load(run, dev)

@@ -173,7 +173,7 @@ def test_isolation(tok, model, rng, n=20):
 
 def test_packed_vs_separate(tok, model, reqs, rng, n=30):
     diffs, t_pack, t_sep, nq = [], 0.0, 0.0, 0
-    sync = torch.mps.synchronize if model.device == "mps" else (lambda: None)
+    sync = {"mps": torch.mps.synchronize, "cuda": torch.cuda.synchronize}.get(str(model.device), lambda: None)
     for r in [x for x in reqs if len(x["questions"]) >= 2][:n]:
         enc = model.encode(tok, materialize(r))
         sync(); t = time.time(); pp = model.probs(enc); sync(); t_pack += time.time() - t
@@ -237,17 +237,31 @@ def main():
     ap.add_argument("--baseline", action="store_true", help="zero-shot letter-logit baseline from the base model")
     ap.add_argument("--baseline_instruct", default="", help="e.g. Qwen/Qwen2.5-0.5B-Instruct: chat-template letter-logit baseline")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--device", choices=["cpu", "mps", "cuda"], default=None)
     a = ap.parse_args()
-    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    dev = a.device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    if dev == "cuda":
+        # fp32-exact evaluation, matching benchmark.LocalPredictor: TF32 (10-bit mantissa) moves probabilities by ~1e-3
+        torch.backends.cuda.matmul.allow_tf32 = False; torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.enable_flash_sdp(False); torch.backends.cuda.enable_mem_efficient_sdp(False)
     rng = random.Random(a.seed)
     reqs = build(a.n_per_source, "test", a.seed)
     meta = torch.load(f"{a.run}/head.pt", map_location="cpu")
     out = {"run": a.run, "holdout_sources": meta.get("holdout", [])}
+    ftok = load_tokenizer(meta["base"], revision=meta.get("base_revision"))
+    kept = []
+    for r in reqs:   # un-pinned source revisions can drift over the token limits; drop before the strict no-partial-metrics checks
+        try: encode(ftok, materialize(r), strict=True)
+        except ValueError: pass
+        else: kept.append(r)
+    out["dropped_overlong_records"] = len(reqs) - len(kept)
+    reqs = kept
     if a.baseline:
         out["baseline_zero_shot_base"] = baseline_letter_logits(meta["base"], reqs, dev, random.Random(a.seed)); print(json.dumps(out, indent=1), flush=True)
     if a.baseline_instruct:
         out["baseline_zero_shot_instruct"] = baseline_letter_logits(a.baseline_instruct, reqs, dev, random.Random(a.seed), chat=True); print(json.dumps(out["baseline_zero_shot_instruct"], indent=1), flush=True)
     if dev == "mps": torch.mps.empty_cache()
+    if dev == "cuda": torch.cuda.empty_cache()
     tok, model = load(a.run, dev)
     for name, fn in [("accuracy_calibration", lambda: test_accuracy(tok, model, reqs, random.Random(a.seed))),
                      ("temperature_scaling", lambda: test_temperature(tok, model, reqs, random.Random(a.seed))),

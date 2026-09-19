@@ -92,8 +92,6 @@ def main():
 
     if min(a.epochs, a.accum, a.n_per_source, a.lora, a.batch, a.synthetic_repeat) < 1 or not 0 < a.public_frac <= 1:
         ap.error("epochs, accum, n_per_source, lora, batch and synthetic_repeat must be positive; 0 < public_frac <= 1")
-    if a.dtype == "bf16" and a.device != "cuda":
-        ap.error("--dtype bf16 requires --device cuda")
     if a.lr <= 0 or a.head_lr < 0 or a.weight_decay < 0 or min(a.ord_w, a.perm_kl, a.anchor_w) < 0 or not 0 <= a.perm_frac <= 1:
         ap.error("invalid learning rate or loss weights")
     if bool(a.anchor) != (a.anchor_w > 0):
@@ -101,12 +99,14 @@ def main():
     anchors = json.loads(Path(a.anchor).read_text()).get("targets", {}) if a.anchor else {}
     if a.anchor: print(f"anchor targets: {len(anchors)} records from {a.anchor}", flush=True)
     anchor_sources = set(a.anchor_sources.split(",")) if a.anchor_sources else None
+    dev = a.device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    if a.dtype == "bf16" and dev != "cuda":
+        ap.error(f"--dtype bf16 requires a CUDA device (resolved device: {dev})")
     out_dir = Path(a.out)
     if out_dir.exists():
         ap.error("refusing to overwrite an existing run")
     out_dir.mkdir(parents=True)
     torch.manual_seed(a.seed); rng = random.Random(a.seed)
-    dev = a.device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     if dev == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if a.dtype == "bf16" else contextlib.nullcontext()
@@ -127,14 +127,6 @@ def main():
 
     holdout = manifest["holdout_sources"] if manifest else [s for s in a.holdout.split(",") if s]
     reqs = load_split(a.suite, "train") if manifest else build(a.n_per_source, "train", a.seed, exclude=holdout)
-    if not manifest:
-        # frozen suites are filtered to the training context when they are frozen (kev.suite.select_unique); records built
-        # on the fly here are not, so apply the same rule instead of letting the strict encoder abort the run (issue #5)
-        kept = [r for r in reqs if fits_context(tok, r)]
-        if len(kept) < len(reqs):
-            print(f"dropped {len(reqs) - len(kept)} of {len(reqs)} records that exceed the training context "
-                  f"({MAX_STATE} state / {MAX_BRANCH} branch / 2048 packed tokens)", flush=True)
-        reqs = kept
     if not reqs:
         raise ValueError("empty training set")
     forbidden = {r["_meta"]["source"] for r in reqs} & set(EVAL_ONLY)
@@ -160,9 +152,18 @@ def main():
         extra = [r for r in reqs if r["_meta"]["source"] in SYNTHETIC] * (a.synthetic_repeat - 1)
         reqs = reqs + extra
         print(f"mix: synthetic_repeat {a.synthetic_repeat} -> +{len(extra)} records", flush=True)
+    kept = [r for r in reqs if fits_context(tok, r)]
+    dropped_overlong = len(reqs) - len(kept)
+    reqs = kept
+    if dropped_overlong:
+        print(f"dropped {dropped_overlong} records that exceed the training context "
+              f"({MAX_STATE} state / {MAX_BRANCH} branch / 2048 packed tokens)", flush=True)
+    if not reqs:
+        raise ValueError("empty training set after context filtering")
     suite_hash = digest(Path(a.suite) / "manifest.json") if manifest else None
     write_json(out_dir / "training_config.json", {"args": vars(a), "suite_sha256": suite_hash, "base_revision": revision,
-                                                "ordinal_objective": "ranked_probability_score", "holdout": holdout})
+                                                "ordinal_objective": "ranked_probability_score", "holdout": holdout,
+                                                "dropped_overlong_records": dropped_overlong})
     print(f"{len(reqs)} training requests (holdout={holdout}), questions by type "
           f"{dict(Counter(q['qtype'] for r in reqs for q in materialize(r)['questions']))}")
 
@@ -233,7 +234,7 @@ def main():
                 "holdout": holdout, "args": vars(a), "suite_sha256": suite_hash}, f"{a.out}/head.pt")
     tok.save_pretrained(a.out)
     write_json(out_dir / "training_metrics.json", {"wall_seconds": time.time() - t0, "records_seen": seen,
-               "requested_records": a.epochs * len(reqs), "truncated_records": 0, "rejected_records": 0,
+               "requested_records": a.epochs * len(reqs), "truncated_records": 0, "rejected_records": dropped_overlong,
                "optimizer_steps": step, "forward_tokens": tokens_seen,
                "peak_device_bytes": peak_mem, "device": dev, "dtype": a.dtype, "batch": a.batch,
                "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)})
