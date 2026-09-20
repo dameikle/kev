@@ -250,7 +250,7 @@ def main():
     out = {"run": a.run, "holdout_sources": meta.get("holdout", [])}
     ftok = load_tokenizer(meta["base"], revision=meta.get("base_revision"))
     kept = []
-    for r in reqs:   # un-pinned source revisions can drift over the token limits; drop before the strict no-partial-metrics checks
+    for r in reqs:   # the legacy build() path runs unpinned datasets and some records overflow the limits; drop before the strict no-partial-metrics checks
         try: encode(ftok, materialize(r), strict=True)
         except ValueError: pass
         else: kept.append(r)

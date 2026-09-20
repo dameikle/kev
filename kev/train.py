@@ -152,6 +152,7 @@ def main():
         extra = [r for r in reqs if r["_meta"]["source"] in SYNTHETIC] * (a.synthetic_repeat - 1)
         reqs = reqs + extra
         print(f"mix: synthetic_repeat {a.synthetic_repeat} -> +{len(extra)} records", flush=True)
+    # Legacy build() data is unpinned and can contain records outside the limits enforced when suites are frozen.
     kept = [r for r in reqs if fits_context(tok, r)]
     dropped_overlong = len(reqs) - len(kept)
     reqs = kept

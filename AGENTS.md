@@ -68,8 +68,10 @@ See README.md (deep dive) and docs/model-cards/ (one card per checkpoint: recipe
   (`DecisionModel`). Training enables TF32; `evaluate`/`benchmark.LocalPredictor` turn TF32 + fast SDPA off on CUDA for
   fp32-exact probabilities. Serving keeps the faster CUDA defaults; `KEV_EXACT=1` opts into the exact path. `--dtype bf16`
   is CUDA-only (autocast, fp32 master weights).
-- `train`/`evaluate` pre-filter records whose state/branch exceeds the 384/1024 token limits (dataset revisions aren't pinned,
-  so sources drift); counts land in `training_metrics.json` rejected_records and `eval.json` dropped_overlong_records.
+- `train`/`evaluate` pre-filter records whose state/branch exceeds the 384/1024 token limits; suite records are filtered at freeze
+  time, but the legacy build() commands run unpinned datasets through strict encoding (the prototype's skip-on-overflow was
+  removed in 176dd04), so e.g. boolq/train/4180 overflows at seed 0 on any device; counts land in `training_metrics.json`
+  rejected_records and `eval.json` dropped_overlong_records.
 - Delimiters reuse existing Qwen special tokens (`<|fim_prefix|>` etc.) to avoid resizing embeddings;
   peft `trainable_token_indices` leaked memory on MPS.
 - `output_hidden_states=True` on MPS blows memory; use the bare `.model` backbone's `last_hidden_state`.
